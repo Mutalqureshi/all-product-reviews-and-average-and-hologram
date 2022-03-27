@@ -1,0 +1,477 @@
+ Get WooCommerce customer reviews from all products, display average and all ratings in a histogram without a plugin 
+
+ =============
+ //Display all reviews
+if (!function_exists('display_all_reviews')) {
+	function display_all_reviews(){
+		//Pagination setup
+		$reviews_per_page = 10;
+		$paged = (get_query_var('paged')) ? get_query_var('paged') : 1;
+		$offset = ($paged - 1) * $reviews_per_page;		
+
+		$args = array(
+			'status' => 'approve',
+			'type' => 'review',
+			'number' => $reviews_per_page,
+			'offset' => $offset
+		);
+
+		// The Query
+		$comments_query = new WP_Comment_Query;
+		$comments = $comments_query->query( $args );
+
+		// Comment Loop
+		if ( $comments ) {
+			echo "<ol>";
+			foreach ( $comments as $comment ): ?>
+			<?php if ( $comment->comment_approved == '0' ) : ?>
+				<p class="meta waiting-approval-info">
+					<em><?php _e( 'Thanks, your review is awaiting approval', 'woocommerce' ); ?></em>
+				</p>
+				<?php endif;  ?>
+				<li itemprop="reviews" itemscope itemtype="http://schema.org/Review" <?php comment_class(); ?> id="li-review-<?php echo $comment->comment_ID; ?>">
+					<div id="review-<?php echo $comment->comment_ID; ?>" class="review_container">
+						<div class="review-avatar">
+							<?php echo get_avatar( $comment->comment_author_email, $size = '50' ); ?>
+						</div>
+						<div class="review-author">
+							<div class="review-author-name" itemprop="author"><?php echo $comment->comment_author; ?></div>
+							<div class='star-rating-container'>
+								<div itemprop="reviewRating" itemscope itemtype="http://schema.org/Rating" class="star-rating" title="<?php echo esc_attr( get_comment_meta( $comment->comment_ID, 'rating', true ) ); ?>">
+									<span style="width:<?php echo get_comment_meta( $comment->comment_ID, 'rating', true )*22; ?>px"><span itemprop="ratingValue"><?php echo get_comment_meta( $comment->comment_ID, 'rating', true ); ?></span> <?php _e('out of 5', 'woocommerce'); ?></span>
+									
+										<?php
+											$timestamp = strtotime( $comment->comment_date ); //Changing comment time to timestamp
+											$date = date('F d, Y', $timestamp);
+										?>
+								</div>
+								<em class="review-date">
+									<time itemprop="datePublished" datetime="<?php echo $comment->comment_date; ?>"><?php echo $date; ?></time>
+								</em>
+							</div>
+						</div>
+						<div class="clear"></div>
+						<div class="review-text">
+							<div itemprop="description" class="description">
+								<?php echo $comment->comment_content; ?>
+							</div>
+							<div class="clear"></div>
+						</div>
+					<div class="clear"></div>			
+				</div>
+			</li>
+
+			<?php 
+			endforeach;
+			echo "</ol>";
+			//Pagination output
+			echo "<div class='navigation'>";
+				$all_approved_product_review_count = get_comments(array(
+					'status'   => 'approve',
+					'type' => 'review',
+					'count' => true
+				));
+				if( is_float($all_approved_product_review_count / $reviews_per_page) ){
+					//In case the value is float, we need to make sure there is an additional page for the final results
+					$additional = 1;
+				}else{
+					$additional = 0;
+				}
+				$max_num_pages = intval( $all_approved_product_review_count / $reviews_per_page ) + $additional;  
+				$current_page = max(1, get_query_var('paged'));
+		
+				echo paginate_links(array(
+					'total' => $max_num_pages
+				));
+			echo "</div>";
+			
+		} else {
+			echo "This product hasn't been rated yet.";
+		}
+	}
+}
+
+==================
+<?php echo display_all_reviews(); ?>
+==================
+
+
+// Disabling Review Tab on product page
+add_filter( 'woocommerce_product_tabs', 'woo_remove_product_tabs', 98 );
+
+function woo_remove_product_tabs( $tabs ) {
+	unset( $tabs['reviews'] ); // Remove the reviews tab information tab
+	return $tabs;
+}
+
+
+==================
+//Display all product approved review count in the shop
+//Returns comment count
+function display_all_approved_product_review_count(){
+	return get_comments(array(
+		'status'   => 'approve',
+		'type' => 'review',
+		'count' => true
+	));
+}
+
+<div class="review-count">
+	We have a total of <?php echo display_all_approved_product_review_count(); ?> reviews
+</div>
+==================
+
+How to get and display average customer rating of all products?
+
+
+/*
+ * Retrieving all product review ratings and using WP Transients API to increase query speed
+ * Return: Array of all review ratings values ordered from the lowest to highest
+ */
+function get_all_product_review_ratings(){
+    global $wpdb;
+
+    if ( false === ( $review_ratings = get_transient( 'all_product_review_ratings' ))){ //Checking if we have previously cached query results in order to save resources and increase speed
+	    $review_ratings = $wpdb->get_results("
+	    	SELECT meta_value
+	    	FROM {$wpdb->prefix}commentmeta as commentmeta
+	    	JOIN {$wpdb->prefix}comments as comments ON comments.comment_id = commentmeta.comment_id
+	    	WHERE commentmeta.meta_key = 'rating' AND comments.comment_approved = 1
+	    	ORDER BY commentmeta.meta_value
+	    ", ARRAY_A);
+
+	    $expiration = 60 * 5; //Expiring query results after 5 minutes
+	    set_transient( 'all_product_review_ratings', $review_ratings, $expiration ); //Temporarily storing cached data in the database by giving it a custom name and a timeframe after which it will expire and be deleted
+
+	    return $review_ratings;
+	}else{
+		return $review_ratings;
+	}
+}
+
+
+/*
+ * Counting reviews by ratings starting from the highest
+ * Return: Array consisting of all rating values and counts how many the rating has been given
+ *
+ * $minimum_rating: minimal possible product rating
+ * $maximum_rating: maximal possible product rating
+ */
+function get_all_product_review_counts_by_ratings($minimum_rating, $maximum_rating){
+	$all_product_review_ratings = get_all_product_review_ratings();
+	
+	if($all_product_review_ratings){ //If we have reviews
+		$all_product_review_ratings_one_dimensional_array = array_map("current", $all_product_review_ratings); //Converting two dimensional array to one dimensional array
+
+		$rating_counts = array_count_values($all_product_review_ratings_one_dimensional_array); //Creating array that consists of rating counts
+
+		$ratings = array();
+
+		while($maximum_rating >= $minimum_rating){
+			if(array_key_exists($maximum_rating, $rating_counts)){
+				$star_count = $rating_counts[$maximum_rating];
+			}else{
+				$star_count = 0;
+			}
+
+			//Creating array that contains information about 
+			$ratings[] = array(
+				"value" => $maximum_rating,
+				"amount" => $star_count
+			);
+
+			$maximum_rating--;
+		}
+		return $ratings;
+	}else{
+		return;
+	}
+}
+
+/*
+ * Retrieving average rating of all product reviews and total review count
+ * Return: Array of average rating and total review count
+ *
+ * $minimum_rating: minimal possible product rating
+ * $maximum_rating: maximal possible product rating
+ */
+function get_all_product_review_average_rating($minimum_rating, $maximum_rating){
+	$get_all_product_review_counts_by_ratings = get_all_product_review_counts_by_ratings($minimum_rating, $maximum_rating);
+
+	if($get_all_product_review_counts_by_ratings){ //If we have reviews
+		$average_rating_results = array();
+		$total_ratings = 0;
+		$total_rating_value = 0;
+
+		foreach ($get_all_product_review_counts_by_ratings as $key => $rating) {
+			$total_ratings = $total_ratings + $rating["amount"];
+			$current_rating_value = $rating["amount"] * $rating["value"];
+			$total_rating_value = $total_rating_value + $current_rating_value;
+		}
+
+		$average_rating = number_format($total_rating_value / $total_ratings, 1); //Rounding value to one decimal place
+		$average_rating_results[] = array(
+			"total_ratings" => $total_ratings,
+			"average_rating" => $average_rating
+		);
+
+		return $average_rating_results;
+	}else{
+		return;
+	}
+}
+
+/*
+ * Creating output of all product review rating
+ * Return: String
+ *
+ * $minimum_rating: minimal possible product rating
+ * $maximum_rating: maximal possible product rating
+ */
+function display_all_product_review_rating($minimum_rating, $maximum_rating){
+	if ( get_option( "woocommerce_enable_review_rating" ) === "yes" ){
+		$all_product_review_average_rating = get_all_product_review_average_rating($minimum_rating, $maximum_rating);
+		if($all_product_review_average_rating){
+			$output = '';
+			$average = $all_product_review_average_rating[0]["average_rating"];
+			$total_ratings = $all_product_review_average_rating[0]["total_ratings"];
+		
+			$output .= "<div class='star-rating-container'>";
+			$output .= wc_get_rating_html( $average, $total_ratings );
+			$output .= "<div class='total-ratings'><span class='average rating-number'>". $average ."</span> out of ". $maximum_rating ." stars</div>";
+			$output .= "</div>";
+
+			return $output;
+		}else{
+			return;
+		}
+	}
+}
+
+===================================
+<?php echo display_all_product_review_rating(1, 5);?>
+===================================
+
+
+How to display all ratings in a histogram in WooCommerce without a plugin?
+
+/*
+ * Creating output of all product review rating histogram
+ * Return: String
+ *
+ * $minimum_rating: minimal possible product rating
+ * $maximum_rating: maximal possible product rating
+ */
+function display_all_product_review_histogram($minimum_rating, $maximum_rating){
+	
+	$all_product_review_average_rating = get_all_product_review_average_rating($minimum_rating, $maximum_rating);
+	$total_ratings = $all_product_review_average_rating[0]["total_ratings"];
+
+	$get_all_product_review_counts_by_ratings = get_all_product_review_counts_by_ratings($minimum_rating, $maximum_rating);
+
+	if($get_all_product_review_counts_by_ratings){
+		$output = '';
+		$sum = 0;
+		$total = 0;
+		$raw_percentages_array = array();
+		$percentages_array = array();
+
+		//When working with rounded percentages, we must make sure the total percentages add up to 100%.
+		//Creating array of rating values and its percentage
+		foreach ($get_all_product_review_counts_by_ratings as $key => $rating) {
+			$percentage = round($rating["amount"] / $total_ratings, 2) * 100;
+			$raw_percentages_array[] = array("value" => $rating["value"], "percent_of_total" => $percentage);
+		}
+		//Counting the total of our percents
+		foreach($raw_percentages_array as $key => $percent) {
+		    $total += $percent[ "percent_of_total" ];
+		}
+		//Creating an array that will have the actual percentages after the rounding has been applied to it.
+		//This will help to see if we have 100% or we are not aligned
+	    foreach($raw_percentages_array as $key => $percent){
+	        $percentages_array[$percent["value"]] = round(($percent["percent_of_total"]/$total) * 100, 0);
+	    }
+	    $sum = array_sum($percentages_array); //Again counting the total of our new percents to see if it adds up to 100%
+
+	    if($sum != 100){ //If we do not have 100%, then we will alter the highest percentage value so that we get a total of 100%
+	        $highest_percentage_key = array_keys($percentages_array, max($percentages_array)); //Getting key of the highest percentage value
+	        $percentages_array[$highest_percentage_key[0]] = 100 - ($sum - max($percentages_array)); //Alterning the percentage
+	    }
+
+	    //Now we are ready to create the output that will give us 100% in total
+		$output .= "<div class='product-review-histogram'>";
+		foreach ($percentages_array as $key => $percentage) {
+			$output .= "<div class='histogram-row star-rating-". $key ."'>";
+			$output .= "<div class='histogram-col-1'>". $key ." star</div>";
+			$output .= "<div class='histogram-col-2'><div class='histogram-meter-bar'><div class='histogram-bar-temperature' style='width: ". $percentage ."%'></div></div></div>";
+			$output .= "<div class='histogram-col-3'>". $percentage ."%</div>";
+			$output .= "</div>";
+		}
+		$output .= "</div>";
+
+		return $output;
+	}else{
+		return;
+	}
+}
+
+
+=========================================
+<?php echo display_all_product_review_histogram(1, 5); ?>
+=========================================
+
+
+Adding a pinch of CSS
+
+/* Star display */
+.star-rating {
+    overflow: hidden;
+    position: relative;
+    height: 1.618em;
+    line-height: 1.618;
+    font-size: 1em;
+    width: 5.3em;
+    font-family: star;
+    font-weight: 400
+}
+
+.star-rating::before {
+    content: '\53\53\53\53\53';
+    opacity: .25;
+    float: left;
+    top: 0;
+    left: 0;
+    position: absolute
+}
+
+.star-rating span {
+    overflow: hidden;
+    float: left;
+    top: 0;
+    left: 0;
+    position: absolute;
+    padding-top: 1.5em
+}
+
+.star-rating span:before {
+    content: '\53\53\53\53\53';
+    top: 0;
+    position: absolute;
+    left: 0;
+}
+
+p.stars {
+    display: inline-block;
+    margin: 0;
+}
+
+p.stars a {
+    position: relative;
+    height: 1em;
+    width: 1em;
+    text-indent: -999em;
+    display: inline-block;
+    text-decoration: none;
+    margin-right: 1px;
+    font-weight: 400;
+    outline: none;
+}
+
+p.stars a:before {
+    display: block;
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 1em;
+    height: 1em;
+    line-height: 1;
+    font-family: star;
+    content: '\53';
+    text-indent: 0;
+    opacity: .25
+}
+
+p.stars a:hover~a:before {
+    content: '\53';
+    opacity: .25
+}
+
+p.stars:hover a:before {
+    content: '\53';
+    opacity: 1
+}
+
+p.stars.selected a.active:before {
+    content: '\53';
+    opacity: 1
+}
+
+p.stars.selected a.active~a:before {
+    content: '\53';
+    opacity: .25
+}
+
+p.stars.selected a:not(.active):before {
+    content: '\53';
+    opacity: 1
+}
+
+.total-ratings{
+	display: inline;
+}
+
+.star-rating-container{
+	display: block;
+	top: -12px;
+	position: relative;
+}
+
+
+/* Review Histogram */
+.product-review-histogram{
+	min-width: 400px;
+}
+.histogram-row{
+	display: block;
+	width: 100%;
+	margin: 6px 0;
+}
+.histogram-row:after{
+	content: "";
+	display: table;
+	clear: both;
+}
+.histogram-col-1,
+.histogram-col-2,
+.histogram-col-3{
+	float: left;
+	width: 20%;
+	text-align: left;
+	font-size: 19px;
+	line-height: 26px;
+}
+.histogram-col-1{
+	text-align: right;
+}
+.histogram-col-2{
+	width: 60%;
+	padding: 3px 5%;
+}
+.histogram-meter-bar{
+	height: 20px;
+	width: 100%;
+	background: #454444;
+}
+.histogram-bar-temperature{
+	height: 100%;
+	background: #ffa800; /* Old browsers */
+	background: -moz-linear-gradient(top, #ffa800 0%, #ef9300 100%); /* FF3.6-15 */
+	background: -webkit-linear-gradient(top, #ffa800 0%,#ef9300 100%); /* Chrome10-25,Safari5.1-6 */
+	background: linear-gradient(to bottom, #ffa800 0%,#ef9300 100%); /* W3C, IE10+, FF16+, Chrome26+, Opera12+, Safari7+ */
+	filter: progid:DXImageTransform.Microsoft.gradient( startColorstr='#ffa800', endColorstr='#ef9300',GradientType=0 ); /* IE6-9 */
+}
+
+
+
+
+https://www.majas-lapu-izstrade.lv/get-woocommerce-customer-reviews-from-all-products-display-average-and-all-ratings-in-a-histogram-without-a-plugin/
